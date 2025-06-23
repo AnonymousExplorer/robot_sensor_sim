@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>机器人激光传感器动态模拟</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+        }
+        .info-label {
+            min-width: 140px;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="w-full max-w-6xl">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl md:text-4xl font-bold text-cyan-400">机器人激光传感器动态模拟</h1>
+            <p class="text-gray-400 mt-2">观察机器人行走晃动时，其胸口激光传感器距离读数的变化（含障碍物检测）</p>
+        </header>
+
+        <main class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div class="bg-gray-800 p-4 rounded-xl shadow-lg border border-gray-700">
+                <h2 class="text-xl font-bold mb-2 text-center">2D 场景示意图</h2>
+                <div class="aspect-w-2 aspect-h-1">
+                    <canvas id="robotCanvas" class="w-full h-full bg-gray-900 rounded-lg"></canvas>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                <div class="bg-gray-800 p-4 rounded-xl shadow-lg border border-gray-700">
+                    <h2 class="text-xl font-bold mb-2 text-center">原始传感器距离曲线</h2>
+                    <div class="aspect-w-2 aspect-h-1">
+                        <canvas id="rawChartCanvas" class="w-full h-full bg-gray-900 rounded-lg"></canvas>
+                    </div>
+                </div>
+                <div class="bg-gray-800 p-4 rounded-xl shadow-lg border border-gray-700">
+                    <h2 class="text-xl font-bold mb-2 text-center">障碍物距离差值曲线</h2>
+                    <div class="aspect-w-2 aspect-h-1">
+                        <canvas id="filteredChartCanvas" class="w-full h-full bg-gray-900 rounded-lg"></canvas>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer class="w-full max-w-4xl mx-auto bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
+            <h3 class="text-lg font-bold mb-4 text-center">参数调整与实时数据</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4">
+                <div class="space-y-4 flex flex-col justify-between">
+                    <div>
+                        <label for="amplitudeSlider" class="block mb-1 text-sm font-medium text-gray-300">晃动幅度: <span id="amplitudeValue" class="font-bold text-cyan-400"></span> px</label>
+                        <input id="amplitudeSlider" type="range" min="5" max="50" value="25" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                    </div>
+                    <div>
+                        <label for="speedSlider" class="block mb-1 text-sm font-medium text-gray-300">晃动速度: <span id="speedValue" class="font-bold text-cyan-400"></span></label>
+                        <input id="speedSlider" type="range" min="0.5" max="5" value="2" step="0.1" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                    </div>
+                    <div>
+                        <label for="obstacleSpeedSlider" class="block mb-1 text-sm font-medium text-gray-300">障碍物移动速度: <span id="obstacleSpeedValue" class="font-bold text-cyan-400"></span></label>
+                        <input id="obstacleSpeedSlider" type="range" min="0.1" max="1" value="0.5" step="0.1" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                    </div>
+                    <div>
+                        <button id="obstacleToggle" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition-all duration-200">
+                            添加障碍物
+                        </button>
+                    </div>
+                </div>
+                <div class="space-y-2 bg-gray-900 p-3 rounded-lg text-sm">
+                    <p class="info-label">传感器倾角: <span class="font-mono font-semibold text-green-400 float-right">30° (固定)</span></p>
+                    <p class="info-label">当前身体高度 (H): <span id="currentHeight" class="font-mono font-semibold text-green-400 float-right">0 px</span></p>
+                    <p class="info-label">当前测量距离 (d): <span id="currentDistance" class="font-mono font-semibold text-green-400 float-right">0 px</span></p>
+                    <p class="info-label text-gray-400 text-xs mt-2" >(d ≈ H / sin(30°))</p>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+<script>
+    // --- DOM 元素获取 ---
+    const robotCanvas = document.getElementById('robotCanvas');
+    const robotCtx = robotCanvas.getContext('2d');
+    
+    // 两个 Chart Canvas
+    const rawChartCanvas = document.getElementById('rawChartCanvas');
+    const rawChartCtx = rawChartCanvas.getContext('2d');
+    const filteredChartCanvas = document.getElementById('filteredChartCanvas');
+    const filteredChartCtx = filteredChartCanvas.getContext('2d');
+
+    const amplitudeSlider = document.getElementById('amplitudeSlider');
+    const speedSlider = document.getElementById('speedSlider');
+    const obstacleSpeedSlider = document.getElementById('obstacleSpeedSlider');
+    const obstacleToggleBtn = document.getElementById('obstacleToggle');
+
+    const amplitudeValueSpan = document.getElementById('amplitudeValue');
+    const speedValueSpan = document.getElementById('speedValue');
+    const obstacleSpeedValueSpan = document.getElementById('obstacleSpeedValue');
+    const currentHeightSpan = document.getElementById('currentHeight');
+    const currentDistanceSpan = document.getElementById('currentDistance');
+
+    // --- 状态与参数 ---
+    let time = 0;
+    let amplitude = parseFloat(amplitudeSlider.value);
+    let speed = parseFloat(speedSlider.value);
+    let obstacleSpeed = parseFloat(obstacleSpeedSlider.value);
+    const baseHeight = 100;
+    const laserAngle = 30 * Math.PI / 180;
+    let hasObstacle = false;
+
+    // Chart.js 实例
+    let rawDistanceChart;
+    let filteredDistanceChart;
+    const CHART_DATA_LENGTH = 300;
+    const chartLabels = Array.from({ length: CHART_DATA_LENGTH }, (_, i) => i - CHART_DATA_LENGTH);
+
+    // 障碍物对象
+    const obstacle = {
+        width: 30,
+        height: 25,
+        x: 0,
+        get y() { return robotCanvas.height - 40 - this.height; }
+    };
+    const OBSTACLE_RESET_X_OFFSET = 1.0;
+    const OBSTACLE_MIN_X_OFFSET = 0.2;
+    const CHART_UPDATE_INTERVAL = 1;
+
+    // --- 初始化与事件监听 ---
+    function resizeCanvas() {
+        const robotRect = robotCanvas.parentElement.getBoundingClientRect();
+        robotCanvas.width = robotRect.width;
+        robotCanvas.height = robotRect.height;
+
+        const chartParentRect = rawChartCanvas.parentElement.parentElement.getBoundingClientRect(); 
+        rawChartCanvas.width = chartParentRect.width;
+        rawChartCanvas.height = chartParentRect.height / 2 - 12;
+        filteredChartCanvas.width = chartParentRect.width;
+        filteredChartCanvas.height = chartParentRect.height / 2 - 12;
+        
+        obstacle.x = robotCanvas.width * OBSTACLE_RESET_X_OFFSET;
+
+        if (rawDistanceChart) {
+            rawDistanceChart.resize();
+            rawDistanceChart.data.datasets[0].data = [];
+            rawDistanceChart.update();
+        }
+        if (filteredDistanceChart) {
+            filteredDistanceChart.resize();
+            filteredDistanceChart.data.datasets[0].data = [];
+            filteredDistanceChart.update();
+        }
+    }
+    window.addEventListener('resize', resizeCanvas);
+    
+    function updateUI() {
+        amplitudeValueSpan.textContent = amplitude.toFixed(0);
+        speedValueSpan.textContent = speed.toFixed(1);
+        obstacleSpeedValueSpan.textContent = obstacleSpeed.toFixed(1);
+    }
+    
+    amplitudeSlider.addEventListener('input', (e) => {
+        amplitude = parseFloat(e.target.value);
+        updateUI();
+    });
+
+    speedSlider.addEventListener('input', (e) => {
+        speed = parseFloat(e.target.value);
+        updateUI();
+    });
+
+    obstacleSpeedSlider.addEventListener('input', (e) => {
+        obstacleSpeed = parseFloat(e.target.value);
+        updateUI();
+    });
+
+    obstacleToggleBtn.addEventListener('click', () => {
+        hasObstacle = !hasObstacle;
+        obstacleToggleBtn.textContent = hasObstacle ? '移除障碍物' : '添加障碍物';
+        obstacleToggleBtn.classList.toggle('bg-indigo-600', !hasObstacle);
+        obstacleToggleBtn.classList.toggle('hover:bg-indigo-700', !hasObstacle);
+        obstacleToggleBtn.classList.toggle('bg-red-600', hasObstacle);
+        obstacleToggleBtn.classList.toggle('hover:bg-red-700', hasObstacle);
+        
+        rawDistanceChart.data.datasets[0].data = [];
+        rawDistanceChart.update();
+        if (filteredDistanceChart) {
+            filteredDistanceChart.data.datasets[0].data = [];
+            filteredDistanceChart.update();
+        }
+        
+        if (hasObstacle) {
+            obstacle.x = robotCanvas.width * OBSTACLE_RESET_X_OFFSET;
+        }
+    });
+
+    // --- 绘图函数 (Canvas 2D) ---
+    function drawRobot(x, y, width, height) {
+        robotCtx.fillStyle = '#3b82f6';
+        robotCtx.fillRect(x - width / 2, y - height, width, height);
+        robotCtx.fillStyle = '#6b7280';
+        robotCtx.beginPath();
+        robotCtx.arc(x, y - height - 10, 10, 0, Math.PI * 2);
+        robotCtx.fill();
+    }
+
+    function drawLaser(startX, startY, angle, distance) {
+        const endX = startX + Math.cos(angle) * distance;
+        const endY = startY + Math.sin(angle) * distance;
+
+        robotCtx.beginPath();
+        robotCtx.moveTo(startX, startY);
+        robotCtx.lineTo(endX, endY);
+        robotCtx.strokeStyle = '#f43f5e';
+        robotCtx.lineWidth = 2;
+        robotCtx.stroke();
+        
+        robotCtx.beginPath();
+        robotCtx.arc(endX, endY, 4, 0, Math.PI * 2);
+        robotCtx.fillStyle = '#f43f5e';
+        robotCtx.fill();
+    }
+
+    function drawObstacle() {
+        robotCtx.fillStyle = '#e11d48'; // rose-600
+        robotCtx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+    }
+
+    // --- Chart.js 初始化和更新 ---
+    function initializeCharts() {
+        Chart.defaults.color = '#cbd5e1';
+        Chart.defaults.font.family = "'Inter', sans-serif";
+
+        // 原始传感器距离图表
+        rawDistanceChart = new Chart(rawChartCtx, {
+            type: 'line',
+            data: {
+                labels: chartLabels,
+                datasets: [
+                    {
+                        label: '原始传感器距离 (d)',
+                        data: [],
+                        borderColor: '#22d3ee', // cyan-400
+                        backgroundColor: 'rgba(34, 211, 238, 0.2)',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        fill: false,
+                        tension: 0.1,
+                    }
+                ]
+            },
+            options: {
+                animation: { duration: 0 },
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        min: -CHART_DATA_LENGTH,
+                        max: 0,
+                        grid: { color: '#4b5563' },
+                        ticks: { display: false }
+                    },
+                    y: {
+                        title: { display: true, text: '距离 (px)', color: '#e2e8f0' },
+                        min: 100,
+                        max: 300,
+                        grid: { color: '#4b5563' },
+                        ticks: { color: '#e2e8f0' }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: '#e2e8f0' } },
+                    tooltip: { enabled: true }
+                }
+            }
+        });
+
+        // 过滤后传感器距离图表 (差值曲线)
+        filteredDistanceChart = new Chart(filteredChartCtx, {
+            type: 'line',
+            data: {
+                labels: chartLabels,
+                datasets: [
+                    {
+                        label: '障碍物距离差值 (d_diff)',
+                        data: [],
+                        borderColor: '#a78bfa', // violet-400
+                        backgroundColor: 'rgba(167, 139, 250, 0.2)',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        fill: false,
+                        tension: 0.1,
+                    }
+                ]
+            },
+            options: {
+                animation: { duration: 0 },
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        type: 'linear',
+                        min: -CHART_DATA_LENGTH,
+                        max: 0,
+                        grid: { color: '#4b5563' },
+                        ticks: { display: false }
+                    },
+                    y: {
+                        title: { display: true, text: '距离差值 (px)', color: '#e2e8f0' },
+                        min: 0,   // 过滤图表纵轴最小缩放，因为是差值，通常为正
+                        max: 100, // 过滤图表纵轴最大缩放
+                        grid: { color: '#4b5563' },
+                        ticks: { color: '#e2e8f0' }
+                    }
+                },
+                plugins: {
+                    legend: { labels: { color: '#e2e8f0' } },
+                    tooltip: { enabled: true }
+                }
+            }
+        });
+    }
+
+    let frameCount = 0;
+    function updateCharts(rawDistance, filteredDistance) {
+        frameCount++;
+        if (frameCount % CHART_UPDATE_INTERVAL !== 0) {
+            return;
+        }
+
+        // 更新原始图表
+        const rawData = rawDistanceChart.data.datasets[0].data;
+        rawData.push(rawDistance);
+        if (rawData.length > CHART_DATA_LENGTH) {
+            rawData.shift();
+        }
+        rawDistanceChart.update('none');
+
+        // 更新过滤图表
+        const filteredData = filteredDistanceChart.data.datasets[0].data;
+        filteredData.push(filteredDistance);
+        if (filteredData.length > CHART_DATA_LENGTH) {
+            filteredData.shift();
+        }
+        filteredDistanceChart.update('none');
+    }
+
+    // --- 主动画循环 ---
+    function animate() {
+        // 1. 更新时间和计算
+        time += 0.01 * speed;
+        const verticalOscillation = amplitude * Math.sin(time);
+        const sensorHeightFromAvg = baseHeight - verticalOscillation; // 当前晃动后的传感器高度
+
+        // 2. 清除和准备场景
+        robotCtx.clearRect(0, 0, robotCanvas.width, robotCanvas.height);
+        const groundY = robotCanvas.height - 40;
+        
+        // 绘制地面
+        robotCtx.fillStyle = '#4b5563';
+        robotCtx.fillRect(0, groundY, robotCanvas.width, 40);
+
+        // 计算机器人和传感器位置
+        const robotWidth = 50;
+        const robotHeight = 80;
+        const robotX = robotCanvas.width * OBSTACLE_MIN_X_OFFSET;
+        const robotFeetY = groundY - (sensorHeightFromAvg - (baseHeight - 50)); 
+        const sensorX = robotX;
+        const sensorY = robotFeetY - robotHeight + 30; // 晃动后的传感器Y坐标
+
+        // 3. 障碍物移动逻辑
+        if (hasObstacle) {
+            obstacle.x -= obstacleSpeed;
+            if (obstacle.x + obstacle.width < robotX - 50) {
+                obstacle.x = robotCanvas.width * OBSTACLE_RESET_X_OFFSET;
+            }
+        }
+
+        // 4. 核心逻辑：计算激光距离（含障碍物检测）- 原始数据
+        let laserDistance;
+        let hitsObstacle = false;
+
+        // 传感器到地面的理论距离 (当前高度)
+        const groundDistance_rawSensorHeight = (groundY - sensorY) / Math.sin(laserAngle); 
+
+        if (hasObstacle) {
+            // --- 1. 检查是否撞击障碍物正面 ---
+            const deltaX_front = obstacle.x - sensorX;
+            if (deltaX_front > 0 && deltaX_front < robotCanvas.width) { 
+                const hitY_on_front_line = sensorY + deltaX_front * Math.tan(laserAngle);
+                if (hitY_on_front_line >= obstacle.y && hitY_on_front_line <= obstacle.y + obstacle.height) {
+                    laserDistance = deltaX_front / Math.cos(laserAngle);
+                    hitsObstacle = true;
+                }
+            }
+            
+            // --- 2. 如果没撞到正面，再检查是否撞击顶面 ---
+            if (!hitsObstacle) {
+                const deltaY_top = obstacle.y - sensorY;
+                if (deltaY_top > 0 && obstacle.y < groundY) {
+                    const hitX_on_top_line = sensorX + deltaY_top / Math.tan(laserAngle);
+                    if (hitX_on_top_line >= obstacle.x && hitX_on_top_line <= obstacle.x + obstacle.width) {
+                        laserDistance = deltaY_top / Math.sin(laserAngle);
+                        hitsObstacle = true;
+                    }
+                }
+            }
+        }
+        
+        if (!hitsObstacle) {
+            laserDistance = groundDistance_rawSensorHeight;
+        }
+
+        // 5. 计算“无障碍物时的距离”（基准线）
+        // 这个值只考虑机器人晃动和地面，不考虑障碍物
+        let distanceWithoutObstacle;
+        // 传感器到地面的理论距离 (当前高度)
+        distanceWithoutObstacle = (groundY - sensorY) / Math.sin(laserAngle);
+
+        // 6. 计算过滤后的距离：无障碍物时的距离 - 当前测量距离
+        // 这个差值会突出障碍物的影响
+        let filteredLaserDistance = distanceWithoutObstacle - laserDistance;
+        // 如果激光击中障碍物，filteredLaserDistance 会是一个正值，表示距离被“缩短”了多少。
+        // 如果没有障碍物，或者障碍物在激光路径之外，filteredLaserDistance 将接近0。
+
+        // 确保差值不会是负数，因为我们关注的是障碍物导致的距离“缩短”量
+        if (filteredLaserDistance < 0) {
+            filteredLaserDistance = 0;
+        }
+
+
+        // 7. 绘制所有元素
+        drawRobot(robotX, robotFeetY, robotWidth, robotHeight);
+        if (hasObstacle) {
+            drawObstacle();
+        }
+        drawLaser(sensorX, sensorY, laserAngle, laserDistance);
+        
+        // 8. 更新图表
+        updateCharts(laserDistance, filteredLaserDistance);
+
+        // 9. 更新数据面板
+        currentHeightSpan.textContent = `${(groundY - sensorY).toFixed(1)} px`;
+        currentDistanceSpan.textContent = `${laserDistance.toFixed(1)} px`;
+
+        // 10. 请求下一帧
+        requestAnimationFrame(animate);
+    }
+
+    // --- 初始化 ---
+    function init() {
+        resizeCanvas();
+        updateUI();
+        initializeCharts();
+        animate();
+    }
+
+    init();
+</script>
+</body>
+</html>
